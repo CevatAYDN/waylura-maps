@@ -26,6 +26,7 @@ ALLOWED_REDIRECT_HOSTS = {
     "api.github.com",
     "github.com",
     "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
     "raw.githubusercontent.com",
 }
 

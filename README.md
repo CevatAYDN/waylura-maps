@@ -8,7 +8,7 @@ Public distribution assets, open-source verification tools, and reproducible PMT
 
 ## 1. Published Assets
 
-- **[v1.0.0 Release](https://github.com/CevatAYDN/waylura-maps/releases/tag/v1.0.0):** İstanbul, Antalya, Tokyo, and Kyoto PMTiles extracts, pack manifests, index/version lock, and a Japanese map font.
+- **[v1.0.0 Release](https://github.com/CevatAYDN/waylura-maps/releases/tag/v1.0.0):** İstanbul, Antalya, Tokyo, and Kyoto PMTiles extracts, pack manifests, index/version lock, and a Japanese map font (11 total assets).
 - Public Git source contains pinned release hashes, unit tests, and verifier source. Map binaries are distributed via GitHub Releases assets, not committed into Git history.
 - **Pinning Contract:** Downstream consumers must pin both the release tag and artifact SHA-256 digests. Never mutate an existing published tag.
 
@@ -20,15 +20,13 @@ Public distribution assets, open-source verification tools, and reproducible PMT
 ```bash
 python -m unittest discover -s tests -v
 ```
-Runs 30 offline tests covering valid releases, missing/unexpected assets, hash mismatches, draft/prerelease rejections, path traversal attacks, insecure redirect blocks, URL credential stripping, manifest version drift, and PMTiles bounding-box extraction rules.
+Runs 40 offline unit and negative tests covering valid releases, missing/unexpected assets, hash mismatches, draft/prerelease rejections, path traversal attacks, insecure redirect blocks, URL credential stripping, cross-host token stripping, manifest contracts, and PMTiles bounding-box extraction rules.
 
 ### Public Release Verification (Live Metadata)
 ```bash
-# Unauthenticated (subject to GitHub IP rate limits)
+# Verify published release against lock file
+# (Authentication is read automatically from GITHUB_TOKEN / GH_TOKEN env vars or `gh auth token`)
 python tools/verify_release.py --tag v1.0.0
-
-# Authenticated (recommended for CI or frequent runs)
-python tools/verify_release.py --tag v1.0.0 --token $GITHUB_TOKEN
 ```
 Queries public GitHub Release metadata and validates all 11 asset names, byte sizes, URLs, uploaded states, and SHA-256 digests against [`releases/v1.0.0.lock.json`](releases/v1.0.0.lock.json).
 
@@ -36,7 +34,7 @@ Queries public GitHub Release metadata and validates all 11 asset names, byte si
 ```bash
 python tools/verify_release.py --tag v1.0.0 --download
 ```
-Downloads each asset over HTTPS, verifies exact byte sizes and SHA-256 digests, and validates the cross-contract integrity of `index.json` ⇄ `*.pack.json` ⇄ `version_lock.json`.
+Downloads each asset over HTTPS, verifies exact byte sizes and SHA-256 digests, and validates the cross-contract integrity of `index.json` ⇄ `*.pack.json` ⇄ `version_lock.json`. Redirects to GitHub CDN (`release-assets.githubusercontent.com`, `objects.githubusercontent.com`) automatically strip sensitive `Authorization` headers.
 
 ---
 
@@ -50,9 +48,12 @@ python tools/extract_pmtiles.py --output build/antalya-z14.pmtiles --bbox 30.301
 
 # Execute extraction and manifest generation
 python tools/extract_pmtiles.py --source https://build.protomaps.com/20260928.pmtiles --output build/antalya-z14.pmtiles --bbox 30.3012,36.6818,30.9770,37.2792 --city antalya
+
+# Execute dual-run bitwise reproducibility verification
+python tools/extract_pmtiles.py --source https://build.protomaps.com/20260928.pmtiles --output build/antalya-z14.pmtiles --bbox 30.3012,36.6818,30.9770,37.2792 --city antalya --verify-reproducible
 ```
 
-The script extracts the requested bounding box, runs `pmtiles verify`, reads headers, and writes a companion `.manifest.json` recording CRS (`EPSG:4326` / `EPSG:3857`), tool versions, source timestamp, and SHA-256.
+The script extracts the requested bounding box, runs `pmtiles verify`, reads headers, and writes a companion `.manifest.json` recording CRS (`EPSG:4326` / `EPSG:3857`), tool versions, source timestamp, and SHA-256. Reproducibility status defaults to `REPRODUCIBILITY_UNVERIFIED` unless proven bitwise identical across two independent runs.
 
 ---
 

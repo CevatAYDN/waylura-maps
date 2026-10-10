@@ -204,6 +204,19 @@ class ReleaseVerifierTests(unittest.TestCase):
             unred_lower = {k.lower(): v for k, v in new_req.unredirected_hdrs.items()}
             self.assertNotIn("authorization", unred_lower)
 
+    def test_authorization_header_stripped_on_release_assets_redirect(self):
+        handler = verifier.HttpsOnlyRedirects()
+        req = urllib.request.Request(
+            "https://api.github.com/repos/test/releases",
+            headers={"Authorization": "Bearer ghp_secret1234567890abcdef"},
+        )
+        new_req = handler.redirect_request(
+            req, None, 302, "Found", {}, "https://release-assets.githubusercontent.com/asset.pmtiles"
+        )
+        self.assertIsNotNone(new_req)
+        headers_lower = {k.lower(): v for k, v in new_req.headers.items()}
+        self.assertNotIn("authorization", headers_lower)
+
     def test_untrusted_redirect_host_blocked(self):
         handler = verifier.HttpsOnlyRedirects()
         req = urllib.request.Request("https://api.github.com/test")

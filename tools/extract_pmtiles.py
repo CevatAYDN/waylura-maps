@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 from pathlib import Path
 
@@ -88,14 +89,19 @@ def find_tool(user_tool: str | None = None) -> str:
 
 
 def get_tool_version(tool_path: str) -> str:
+    """Query actual tool version via command line.
+    
+    If query fails or binary is missing, returns UNKNOWN / NOT_DETECTED.
+    Never fabricates expected version if actual execution fails.
+    """
     try:
         res = subprocess.run([tool_path, "version"], capture_output=True, text=True, timeout=5)
         out = (res.stdout or res.stderr).strip()
-        if out:
+        if res.returncode == 0 and out:
             return out
     except Exception:
         pass
-    return EXPECTED_TOOL_VERSION
+    return "UNKNOWN / NOT_DETECTED"
 
 
 def build_manifest_record(
@@ -109,13 +115,17 @@ def build_manifest_record(
     source_archive: str,
     source_snapshot: str,
     tool_version: str,
-    status: str = "EXTRACT_VERIFIED",
+    status: str = "EXTRACT_UNVERIFIED",
+    reproducibility_classification: str = "REPRODUCIBILITY_UNVERIFIED",
+    dual_run_verification: dict | None = None,
 ) -> dict:
     """Build deterministic manifest record.
     
     Variable runtime timestamps (builtAt) are omitted from this deterministic artifact record.
+    If header extraction fails, header is None; fake metadata is NEVER fabricated.
+    Reproducibility status defaults to UNVERIFIED unless backed by verified dual-run proof.
     """
-    return {
+    record = {
         "city": city,
         "fileName": file_name,
         "sizeBytes": size_bytes,
@@ -125,13 +135,7 @@ def build_manifest_record(
             "vectorTileSchema": CRS_TILES,
         },
         "requestedBbox": requested_bbox,
-        "header": header or {
-            "tile_compression": "gzip",
-            "tile_type": "mvt",
-            "minzoom": 0,
-            "maxzoom": DEFAULT_MAXZOOM,
-            "bounds": requested_bbox,
-        },
+        "header": header,
         "sourceArchive": source_archive,
         "sourceSnapshot": source_snapshot,
         "osmReplicationTimestamp": DEFAULT_OSM_REPLICATION_TIMESTAMP,
@@ -140,14 +144,59 @@ def build_manifest_record(
         "attribution": "OpenStreetMap contributors; Protomaps; ESA WorldCover; Natural Earth",
         "status": status,
         "provenance": {
-            "reproducibilityClassification": "ARCHIVE_EXTRACT_REPRODUCIBLE",
+            "reproducibilityClassification": reproducibility_classification,
             "rawPlanetPbfGeneration": "NOT_REPRODUCIBLE_WITHOUT_UPSTREAM_CLUSTER",
             "note": (
-                "Extracting this bounding box from the designated source archive with go-pmtiles 1.31.2 "
-                "is byte-deterministic. Wholesale planet generation from raw OSM PBF is maintained upstream."
+                "Extracting this bounding box requires identical source bytes, tool version, and bounds. "
+                "Reproducibility defaults to UNVERIFIED unless validated by dual independent runs."
             ),
         },
     }
+    if dual_run_verification is not None:
+        record["provenance"]["dualRunVerification"] = dual_run_verification
+    return record
+
+
+def execute_extract(
+    tool: str,
+    source: str,
+    output_path: Path,
+    bbox: list[float],
+    maxzoom: int,
+) -> tuple[int, str, dict | None]:
+    """Execute pmtiles extract, verify, and show --header-json.
+    
+    Returns (size, sha256, header). Header is None if header query fails.
+    """
+    cmd_extract = [
+        tool,
+        "extract",
+        source,
+        str(output_path),
+        f"--bbox={','.join(map(str, bbox))}",
+        f"--maxzoom={maxzoom}",
+    ]
+    res = subprocess.run(cmd_extract, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise ExtractionError(f"pmtiles extract failed (code {res.returncode}):\n{res.stderr or res.stdout}")
+
+    cmd_verify = [tool, "verify", str(output_path)]
+    res_verify = subprocess.run(cmd_verify, capture_output=True, text=True)
+    if res_verify.returncode != 0:
+        raise ExtractionError(f"pmtiles verify failed:\n{res_verify.stderr or res_verify.stdout}")
+
+    header = None
+    cmd_show = [tool, "show", str(output_path), "--header-json"]
+    res_show = subprocess.run(cmd_show, capture_output=True, text=True)
+    if res_show.returncode == 0 and res_show.stdout.strip():
+        try:
+            header = json.loads(res_show.stdout)
+        except json.JSONDecodeError:
+            header = None
+
+    sha = compute_sha256(output_path)
+    size = output_path.stat().st_size
+    return size, sha, header
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -158,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--city", default="custom", help="City or region identifier")
     parser.add_argument("--maxzoom", type=int, default=DEFAULT_MAXZOOM, help="Max zoom level (default: 14)")
     parser.add_argument("--tool-path", default=None, help="Explicit path to pmtiles binary")
+    parser.add_argument("--verify-reproducible", action="store_true", help="Execute two independent runs and compare bitwise hashes")
     parser.add_argument("--dry-run", action="store_true", help="Print plan and draft manifest without executing")
     args = parser.parse_args(argv)
 
@@ -183,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_snapshot=DEFAULT_SOURCE_SNAPSHOT,
                 tool_version=EXPECTED_TOOL_VERSION,
                 status="DRY_RUN_PLAN",
+                reproducibility_classification="REPRODUCIBILITY_UNVERIFIED",
             )
             print("\n[DRY-RUN] Draft Manifest:")
             print(json.dumps(manifest_draft, indent=2, ensure_ascii=False))
@@ -192,35 +243,49 @@ def main(argv: list[str] | None = None) -> int:
         actual_tool_version = get_tool_version(tool)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        cmd_extract = [
-            tool,
-            "extract",
-            args.source,
-            str(output_path),
-            f"--bbox={','.join(map(str, bbox))}",
-            f"--maxzoom={maxzoom}",
-        ]
-        print(f"Running extract: {' '.join(cmd_extract)}")
-        res = subprocess.run(cmd_extract, capture_output=True, text=True)
-        if res.returncode != 0:
-            raise ExtractionError(f"pmtiles extract failed (code {res.returncode}):\n{res.stderr or res.stdout}")
+        if args.verify_reproducible:
+            print(f"Executing Dual-Run Reproducibility Verification with {actual_tool_version}...")
+            with tempfile.TemporaryDirectory() as tmpdir:
+                p1 = Path(tmpdir) / "run1.pmtiles"
+                p2 = Path(tmpdir) / "run2.pmtiles"
 
-        cmd_verify = [tool, "verify", str(output_path)]
-        res_verify = subprocess.run(cmd_verify, capture_output=True, text=True)
-        if res_verify.returncode != 0:
-            raise ExtractionError(f"pmtiles verify failed:\n{res_verify.stderr or res_verify.stdout}")
+                print("  -> Run 1/2...")
+                size1, sha1, header1 = execute_extract(tool, args.source, p1, bbox, maxzoom)
+                print(f"     Run 1 SHA-256: {sha1} ({size1} bytes)")
 
-        header = None
-        cmd_show = [tool, "show", str(output_path), "--header-json"]
-        res_show = subprocess.run(cmd_show, capture_output=True, text=True)
-        if res_show.returncode == 0 and res_show.stdout.strip():
-            try:
-                header = json.loads(res_show.stdout)
-            except json.JSONDecodeError:
-                pass
+                print("  -> Run 2/2...")
+                size2, sha2, header2 = execute_extract(tool, args.source, p2, bbox, maxzoom)
+                print(f"     Run 2 SHA-256: {sha2} ({size2} bytes)")
 
-        sha = compute_sha256(output_path)
-        size = output_path.stat().st_size
+                if sha1 != sha2 or size1 != size2:
+                    raise ExtractionError(
+                        f"NON-DETERMINISTIC EXTRACTION DETECTED:\n"
+                        f"Run 1: {sha1} ({size1} bytes)\n"
+                        f"Run 2: {sha2} ({size2} bytes)\n"
+                        f"Cannot declare REPRODUCIBLE PASS."
+                    )
+
+                # Move verified artifact to final output path
+                shutil.copy2(p1, output_path)
+                status = "REPRODUCIBLE_PASS"
+                repro_class = "VERIFIED_BITWISE_REPRODUCIBLE"
+                dual_proof = {
+                    "verified": True,
+                    "runsCount": 2,
+                    "matchingSha256": sha1,
+                    "matchingSizeBytes": size1,
+                    "toolVersion": actual_tool_version,
+                }
+                header = header1
+                sha = sha1
+                size = size1
+        else:
+            # Single run: reproducibility remains UNVERIFIED
+            size, sha, header = execute_extract(tool, args.source, output_path, bbox, maxzoom)
+            status = "EXTRACT_COMPLETED_UNVERIFIED"
+            repro_class = "REPRODUCIBILITY_UNVERIFIED"
+            dual_proof = None
+
         manifest = build_manifest_record(
             city=args.city,
             file_name=output_path.name,
@@ -231,11 +296,15 @@ def main(argv: list[str] | None = None) -> int:
             source_archive=args.source,
             source_snapshot=DEFAULT_SOURCE_SNAPSHOT,
             tool_version=actual_tool_version,
+            status=status,
+            reproducibility_classification=repro_class,
+            dual_run_verification=dual_proof,
         )
 
         manifest_path = output_path.with_suffix(".manifest.json")
         manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         print(f"SUCCESS: Extracted {output_path.name} ({size} bytes, sha256={sha})")
+        print(f"Status: {status} ({repro_class})")
         print(f"Manifest written to: {manifest_path.name}")
         return 0
 
