@@ -72,6 +72,121 @@ class ReleaseVerifierTests(unittest.TestCase):
             verifier.validate_manifest_contract(
                 index, {"istanbul.pack.json": manifest}, lock, versions)
 
+    def test_tag_mismatch_rejected(self):
+        self.release["tag_name"] = "v1.0.1"
+        with self.assertRaises(verifier.VerificationError):
+            verifier.validate_release(self.release, self.lock)
+
+    def test_prerelease_rejected(self):
+        self.release["prerelease"] = True
+        with self.assertRaises(verifier.VerificationError):
+            verifier.validate_release(self.release, self.lock)
+
+    def test_path_traversal_asset_name_rejected(self):
+        self.release["assets"] = [{"name": "../evil.pmtiles"}]
+        with self.assertRaises(verifier.VerificationError):
+            verifier.validate_release(self.release, self.lock)
+
+    def test_backslash_asset_name_rejected(self):
+        self.release["assets"] = [{"name": "evil\\path.pmtiles"}]
+        with self.assertRaises(verifier.VerificationError):
+            verifier.validate_release(self.release, self.lock)
+
+    def test_invalid_sha_format_in_lock_rejected(self):
+        self.lock["assets"]["map.pmtiles"]["sha256"] = "not_a_valid_64_hex_string"
+        with self.assertRaises(verifier.VerificationError):
+            verifier.validate_release(self.release, self.lock)
+
+    def test_invalid_size_in_lock_rejected(self):
+        self.lock["assets"]["map.pmtiles"]["size"] = -5
+        with self.assertRaises(verifier.VerificationError):
+            verifier.validate_release(self.release, self.lock)
+
+    def test_asset_state_not_uploaded_rejected(self):
+        self.release["assets"][0]["state"] = "in_progress"
+        with self.assertRaises(verifier.VerificationError):
+            verifier.validate_release(self.release, self.lock)
+
+    def test_size_mismatch_rejected(self):
+        self.release["assets"][0]["size"] = 9999
+        with self.assertRaises(verifier.VerificationError):
+            verifier.validate_release(self.release, self.lock)
+
+    def test_http_redirect_rejected(self):
+        handler = verifier.HttpsOnlyRedirects()
+        with self.assertRaises(verifier.VerificationError):
+            handler.redirect_request(None, None, 302, "Found", {}, "http://insecure.test/file")
+
+    def test_credential_redirect_rejected(self):
+        handler = verifier.HttpsOnlyRedirects()
+        with self.assertRaises(verifier.VerificationError):
+            handler.redirect_request(None, None, 302, "Found", {}, "https://user:pass@secure.test/file")
+
+    def test_fetch_rejects_credentials_in_url(self):
+        with self.assertRaises(verifier.VerificationError):
+            verifier.fetch("https://user:pass@example.com/asset")
+
+    def test_fetch_rejects_non_https_url(self):
+        with self.assertRaises(verifier.VerificationError):
+            verifier.fetch("http://example.com/asset")
+
+    def test_manifest_contract_duplicate_pack_id(self):
+        lock = {"assets": {"p1.pmtiles": {"size": 10, "sha256": "a" * 64}}}
+        index = {"schemaVersion": 1, "packs": [
+            {"packId": "p1", "packVersion": 1, "manifestAsset": "p1.pack.json"},
+            {"packId": "p1", "packVersion": 1, "manifestAsset": "p1.pack.json"},
+        ]}
+        with self.assertRaises(verifier.VerificationError):
+            verifier.validate_manifest_contract(index, {}, lock, {"schemaVersion": 1, "packs": {"p1": {"packVersion": 1}}})
+
+    def test_manifest_contract_version_drift(self):
+        lock = {"assets": {"p1.pmtiles": {"size": 10, "sha256": "a" * 64}}}
+        index = {"schemaVersion": 1, "packs": [
+            {"packId": "p1", "packVersion": 2, "manifestAsset": "p1.pack.json"}
+        ]}
+        manifest = {"packId": "p1", "packVersion": 1, "components": [
+            {"kind": "map", "fileName": "p1.pmtiles", "sha256": "a" * 64, "sizeBytes": 10}
+        ]}
+        with self.assertRaises(verifier.VerificationError):
+            verifier.validate_manifest_contract(index, {"p1.pack.json": manifest}, lock, {"schemaVersion": 1, "packs": {"p1": {"packVersion": 2}}})
+
+    def test_manifest_contract_missing_map(self):
+        lock = {"assets": {}}
+        index = {"schemaVersion": 1, "packs": [
+            {"packId": "p1", "packVersion": 1, "manifestAsset": "p1.pack.json"}
+        ]}
+        manifest = {"packId": "p1", "packVersion": 1, "components": [
+            {"kind": "poi", "fileName": "p1.poi.json", "sha256": "a" * 64, "sizeBytes": 10}
+        ]}
+        with self.assertRaises(verifier.VerificationError):
+            verifier.validate_manifest_contract(index, {"p1.pack.json": manifest}, lock, {"schemaVersion": 1, "packs": {"p1": {"packVersion": 1}}})
+
+    def test_manifest_contract_size_mismatch(self):
+        lock = {"assets": {"p1.pmtiles": {"size": 10, "sha256": "a" * 64}}}
+        index = {"schemaVersion": 1, "packs": [
+            {"packId": "p1", "packVersion": 1, "manifestAsset": "p1.pack.json"}
+        ]}
+        manifest = {"packId": "p1", "packVersion": 1, "components": [
+            {"kind": "map", "fileName": "p1.pmtiles", "sha256": "a" * 64, "sizeBytes": 999}
+        ]}
+        with self.assertRaises(verifier.VerificationError):
+            verifier.validate_manifest_contract(index, {"p1.pack.json": manifest}, lock, {"schemaVersion": 1, "packs": {"p1": {"packVersion": 1}}})
+
+    def test_manifest_contract_version_lock_id_mismatch(self):
+        lock = {"assets": {"p1.pmtiles": {"size": 10, "sha256": "a" * 64}}}
+        index = {"schemaVersion": 1, "packs": [
+            {"packId": "p1", "packVersion": 1, "manifestAsset": "p1.pack.json"}
+        ]}
+        manifest = {"packId": "p1", "packVersion": 1, "components": [
+            {"kind": "map", "fileName": "p1.pmtiles", "sha256": "a" * 64, "sizeBytes": 10}
+        ]}
+        versions = {"schemaVersion": 1, "packs": {
+            "p1": {"packVersion": 1},
+            "p2_extra": {"packVersion": 1},
+        }}
+        with self.assertRaises(verifier.VerificationError):
+            verifier.validate_manifest_contract(index, {"p1.pack.json": manifest}, lock, versions)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -34,15 +35,19 @@ class HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def fetch(url: str, *, max_bytes: int | None = None) -> bytes:
+def fetch(url: str, *, max_bytes: int | None = None, token: str | None = None) -> bytes:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
         raise VerificationError("Only HTTPS URLs without credentials are accepted")
     opener = urllib.request.build_opener(HttpsOnlyRedirects)
-    request = urllib.request.Request(url, headers={
+    headers = {
         "User-Agent": "waylura-maps-verifier/1.0",
         "Accept": "application/vnd.github+json",
-    })
+    }
+    effective_token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if effective_token and parsed.netloc == "api.github.com":
+        headers["Authorization"] = f"Bearer {effective_token}"
+    request = urllib.request.Request(url, headers=headers)
     with opener.open(request, timeout=45) as response:
         data = response.read(None if max_bytes is None else max_bytes + 1)
     if max_bytes is not None and len(data) > max_bytes:
@@ -50,8 +55,8 @@ def fetch(url: str, *, max_bytes: int | None = None) -> bytes:
     return data
 
 
-def fetch_json(url: str) -> dict:
-    data = json.loads(fetch(url, max_bytes=2_000_000))
+def fetch_json(url: str, *, token: str | None = None) -> dict:
+    data = json.loads(fetch(url, max_bytes=2_000_000, token=token))
     if not isinstance(data, dict):
         raise VerificationError("Expected JSON object")
     return data
@@ -130,6 +135,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", default="v1.0.0")
     parser.add_argument("--lock", default=str(Path(__file__).resolve().parents[1] / "releases" / "v1.0.0.lock.json"))
+    parser.add_argument("--token", default=None,
+                        help="Optional GitHub token for API rate-limiting (or use GITHUB_TOKEN/GH_TOKEN env)")
     parser.add_argument("--download", action="store_true",
                         help="Download/hash all assets and verify manifests (about 86 MB)")
     args = parser.parse_args()
@@ -137,7 +144,7 @@ def main() -> int:
         lock = json.loads(Path(args.lock).read_text(encoding="utf-8"))
         if args.tag != lock.get("tag"):
             raise VerificationError("--tag and lock.tag mismatch")
-        release = fetch_json(f"https://api.github.com/repos/{REPO}/releases/tags/{args.tag}")
+        release = fetch_json(f"https://api.github.com/repos/{REPO}/releases/tags/{args.tag}", token=args.token)
         assets = validate_release(release, lock)
         print(f"PASS: {len(assets)} pinned public assets in {args.tag}")
         if args.download:
