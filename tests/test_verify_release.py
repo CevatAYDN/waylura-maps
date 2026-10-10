@@ -2,6 +2,7 @@
 import importlib.util
 import pathlib
 import unittest
+import urllib.request
 
 script = pathlib.Path(__file__).resolve().parents[1] / "tools" / "verify_release.py"
 spec = importlib.util.spec_from_file_location("verify_release", script)
@@ -187,6 +188,36 @@ class ReleaseVerifierTests(unittest.TestCase):
         with self.assertRaises(verifier.VerificationError):
             verifier.validate_manifest_contract(index, {"p1.pack.json": manifest}, lock, versions)
 
+    def test_authorization_header_stripped_on_cross_host_redirect(self):
+        handler = verifier.HttpsOnlyRedirects()
+        req = urllib.request.Request(
+            "https://api.github.com/repos/test/releases",
+            headers={"Authorization": "Bearer ghp_secret1234567890abcdef"},
+        )
+        new_req = handler.redirect_request(
+            req, None, 302, "Found", {}, "https://objects.githubusercontent.com/asset.pmtiles"
+        )
+        self.assertIsNotNone(new_req)
+        headers_lower = {k.lower(): v for k, v in new_req.headers.items()}
+        self.assertNotIn("authorization", headers_lower)
+        if hasattr(new_req, "unredirected_hdrs"):
+            unred_lower = {k.lower(): v for k, v in new_req.unredirected_hdrs.items()}
+            self.assertNotIn("authorization", unred_lower)
+
+    def test_untrusted_redirect_host_blocked(self):
+        handler = verifier.HttpsOnlyRedirects()
+        req = urllib.request.Request("https://api.github.com/test")
+        with self.assertRaises(verifier.VerificationError):
+            handler.redirect_request(req, None, 302, "Found", {}, "https://evil.invalid/download")
+
+    def test_redact_sensitive_tokens(self):
+        msg = "Failed with ghp_1234567890abcdef1234 and Bearer token123"
+        redacted = verifier.redact_sensitive(msg)
+        self.assertNotIn("ghp_1234567890abcdef1234", redacted)
+        self.assertNotIn("Bearer token123", redacted)
+        self.assertIn("[REDACTED]", redacted)
+
 
 if __name__ == "__main__":
     unittest.main()
+

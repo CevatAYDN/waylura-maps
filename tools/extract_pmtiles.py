@@ -10,7 +10,6 @@ CRS, clipping bounds, source timestamps, and reproducibility provenance.
 from __future__ import annotations
 
 import argparse
-import datetime
 import hashlib
 import json
 import os
@@ -27,6 +26,7 @@ EXPECTED_TOOL_VERSION = "go-pmtiles 1.31.2"
 DEFAULT_MAXZOOM = 14
 CRS_COORDINATES = "EPSG:4326 (WGS84)"
 CRS_TILES = "EPSG:3857 (Web Mercator)"
+WEB_MERCATOR_MAX_LAT = 85.05112878
 
 
 class ExtractionError(Exception):
@@ -46,12 +46,23 @@ def parse_bbox(bbox_str: str) -> list[float]:
 
     if not (-180.0 <= min_lon <= 180.0 and -180.0 <= max_lon <= 180.0):
         raise ExtractionError(f"Longitude must be in [-180, 180]: min_lon={min_lon}, max_lon={max_lon}")
-    if not (-90.0 <= min_lat <= 90.0 and -90.0 <= max_lat <= 90.0):
-        raise ExtractionError(f"Latitude must be in [-90, 90]: min_lat={min_lat}, max_lat={max_lat}")
-    if min_lon > max_lon or min_lat > max_lat:
-        raise ExtractionError(f"Invalid bounding box order (min must be <= max): {bbox_str}")
+    if not (-WEB_MERCATOR_MAX_LAT <= min_lat <= WEB_MERCATOR_MAX_LAT and -WEB_MERCATOR_MAX_LAT <= max_lat <= WEB_MERCATOR_MAX_LAT):
+        raise ExtractionError(
+            f"Latitude exceeds Web Mercator projection bounds [{-WEB_MERCATOR_MAX_LAT}, {WEB_MERCATOR_MAX_LAT}]: "
+            f"min_lat={min_lat}, max_lat={max_lat}"
+        )
+    if min_lon >= max_lon:
+        raise ExtractionError(f"Bounding box width must be positive (min_lon < max_lon): {bbox_str}")
+    if min_lat >= max_lat:
+        raise ExtractionError(f"Bounding box height must be positive (min_lat < max_lat): {bbox_str}")
 
     return [min_lon, min_lat, max_lon, max_lat]
+
+
+def validate_maxzoom(maxzoom: int) -> int:
+    if not isinstance(maxzoom, int) or not (0 <= maxzoom <= 16):
+        raise ExtractionError(f"Invalid maxzoom {maxzoom}; must be an integer in range [0, 16]")
+    return maxzoom
 
 
 def compute_sha256(file_path: Path) -> str:
@@ -76,6 +87,17 @@ def find_tool(user_tool: str | None = None) -> str:
     return "pmtiles"
 
 
+def get_tool_version(tool_path: str) -> str:
+    try:
+        res = subprocess.run([tool_path, "version"], capture_output=True, text=True, timeout=5)
+        out = (res.stdout or res.stderr).strip()
+        if out:
+            return out
+    except Exception:
+        pass
+    return EXPECTED_TOOL_VERSION
+
+
 def build_manifest_record(
     *,
     city: str,
@@ -89,6 +111,10 @@ def build_manifest_record(
     tool_version: str,
     status: str = "EXTRACT_VERIFIED",
 ) -> dict:
+    """Build deterministic manifest record.
+    
+    Variable runtime timestamps (builtAt) are omitted from this deterministic artifact record.
+    """
     return {
         "city": city,
         "fileName": file_name,
@@ -112,7 +138,6 @@ def build_manifest_record(
         "toolVersion": tool_version,
         "license": "ODbL-1.0 (OpenStreetMap); CC-BY-4.0 (ESA WorldCover); Public Domain (Natural Earth)",
         "attribution": "OpenStreetMap contributors; Protomaps; ESA WorldCover; Natural Earth",
-        "builtAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "status": status,
         "provenance": {
             "reproducibilityClassification": "ARCHIVE_EXTRACT_REPRODUCIBLE",
@@ -138,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         bbox = parse_bbox(args.bbox)
+        maxzoom = validate_maxzoom(args.maxzoom)
         output_path = Path(args.output).resolve()
 
         if args.dry_run:
@@ -145,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[DRY-RUN] Output:        {output_path}")
             print(f"[DRY-RUN] City:          {args.city}")
             print(f"[DRY-RUN] BBox:          {bbox}")
-            print(f"[DRY-RUN] Maxzoom:       {args.maxzoom}")
+            print(f"[DRY-RUN] Maxzoom:       {maxzoom}")
             manifest_draft = build_manifest_record(
                 city=args.city,
                 file_name=output_path.name,
@@ -163,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         tool = find_tool(args.tool_path)
+        actual_tool_version = get_tool_version(tool)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         cmd_extract = [
@@ -171,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
             args.source,
             str(output_path),
             f"--bbox={','.join(map(str, bbox))}",
-            f"--maxzoom={args.maxzoom}",
+            f"--maxzoom={maxzoom}",
         ]
         print(f"Running extract: {' '.join(cmd_extract)}")
         res = subprocess.run(cmd_extract, capture_output=True, text=True)
@@ -203,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
             header=header,
             source_archive=args.source,
             source_snapshot=DEFAULT_SOURCE_SNAPSHOT,
-            tool_version=EXPECTED_TOOL_VERSION,
+            tool_version=actual_tool_version,
         )
 
         manifest_path = output_path.with_suffix(".manifest.json")
