@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "repository": "CevatAYDN/waylura-maps",
+  "tag": "v1.0.0",
+  "assets": {
+    "antalya-z14.pmtiles": {
+      "size": 7732545,
+      "sha256": "dd0c36e8ce35421b84b8666c7d63976252d0d278d0a566966027d11408c03b99"
+    },
+    "antalya.pack.json": {
+      "size": 6314,
+      "sha256": "023c297318bba09b58dd15b9529467a6c18f2b61e12b53cecee83fb9b19b6db7"
+    },
+    "index.json": {
+      "size": 941,
+      "sha256": "71315006209507317a59ad8c750374f6991f3126cdf3cae067b4dff856139808"
+    },
+    "istanbul-z14.pmtiles": {
+      "size": 38146029,
+      "sha256": "abf03666b1d125b80405ec400f727e0729e86b280e6f60828dd080f29db91bdf"
+    },
+    "istanbul.pack.json": {
+      "size": 6314,
+      "sha256": "46a7951d5d7cb1e683fc82913b0e9510f6ad24fada292743408c0e610d568800"
+    },
+    "kyoto-z14.pmtiles": {
+      "size": 11721214,
+      "sha256": "5f41fe4f9641379361a3cb48398b35ff2cc7018c58cd4616dc847e1b6933faa4"
+    },
+    "kyoto.pack.json": {
+      "size": 6086,
+      "sha256": "5bee883041795cd7138790178a4595a5629d89c7554cfea18290178809df1c0c"
+    },
+    "tokyo-z14.pmtiles": {
+      "size": 27576152,
+      "sha256": "80c4440ab5ba42282267b53cb519c68a092a85fd41741c7cf3d93f7baf5e5645"
+    },
+    "tokyo.pack.json": {
+      "size": 6092,
+      "sha256": "70d3e4a31ebeabaa21d3fe5cc1d49c1c61fc30868774341313dae96b57768f3a"
+    },
+    "version_lock.json": {
+      "size": 1124,
+      "sha256": "5cd14ca6f14ad5877586efb03c999a599e16c1fae0899414673c229ac16de60e"
+    },
+    "waylura-map-sans-japanese-f1c6a8815f25bc4fc4ebd9bc155055557e3154af11266a02c25835e426c1fe74.otf": {
+      "size": 569552,
+      "sha256": "f1c6a8815f25bc4fc4ebd9bc155055557e3154af11266a02c25835e426c1fe74"
+    }
+  }
+}
